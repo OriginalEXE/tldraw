@@ -11,6 +11,7 @@ import {
 	TLDrawShapeSegment,
 	TLOnResizeHandler,
 	TLShapeUtilCanvasSvgDef,
+	Vec2d,
 	VecLike,
 	drawShapeMigrations,
 	drawShapeProps,
@@ -20,7 +21,7 @@ import {
 	rng,
 	toFixed,
 } from '@tldraw/editor'
-import { ShapeFill, getShapeFillSvg, useDefaultColorTheme } from '../shared/ShapeFill'
+import { getShapeFillSvg } from '../shared/ShapeFill'
 import { STROKE_SIZES } from '../shared/default-shape-constants'
 import { getFillDefForCanvas, getFillDefForExport } from '../shared/defaultStyleDefs'
 import { getStrokeOutlinePoints } from '../shared/freehand/getStrokeOutlinePoints'
@@ -29,6 +30,50 @@ import { setStrokePointRadii } from '../shared/freehand/setStrokePointRadii'
 import { getSvgPathFromStrokePoints } from '../shared/freehand/svg'
 import { useForceSolid } from '../shared/useForceSolid'
 import { getDrawShapeStrokeDashArray, getFreehandOptions, getPointsFromSegments } from './getPath'
+
+type AugmentedPoint = {
+	x: number
+	y: number
+	weight: number
+}
+const distanceWindow = 3
+const maxWeight = 0.5
+
+function augmentPoints(points: VecLike[]): AugmentedPoint[] {
+	if (points.length === 1) {
+		return [
+			{
+				x: points[0].x,
+				y: points[0].y,
+				weight: maxWeight,
+			},
+		]
+	}
+	const result: AugmentedPoint[] = new Array(points.length)
+	const distances = new Array(points.length - 1)
+	for (let i = 1; i < points.length; i++) {
+		distances[i - 1] = Vec2d.Dist(points[i - 1], points[i])
+	}
+
+	for (let i = 0; i < points.length; i++) {
+		let totalDistanceInWindow = 0
+		let totalPointsInWindow = 0
+		const windowStart = Math.max(0, i - distanceWindow)
+		const windowEnd = Math.min(points.length - 1, windowStart + distanceWindow * 2 + 1)
+		for (let j = windowStart; j < windowEnd; j++) {
+			totalDistanceInWindow += distances[j]
+			totalPointsInWindow++
+		}
+		const avgDistanceInWindow = totalDistanceInWindow / totalPointsInWindow
+		result[i] = {
+			x: points[i].x,
+			y: points[i].y,
+			weight: Math.min(1 / avgDistanceInWindow, 0.5),
+		}
+	}
+
+	return result
+}
 
 /** @public */
 export class DrawShapeUtil extends ShapeUtil<TLDrawShape> {
@@ -90,69 +135,21 @@ export class DrawShapeUtil extends ShapeUtil<TLDrawShape> {
 	}
 
 	component(shape: TLDrawShape) {
-		const theme = useDefaultColorTheme()
-		const forceSolid = useForceSolid()
-		const strokeWidth = STROKE_SIZES[shape.props.size]
-		const allPointsFromSegments = getPointsFromSegments(shape.props.segments)
-
-		const showAsComplete = shape.props.isComplete || last(shape.props.segments)?.type === 'straight'
-
-		let sw = strokeWidth
-		if (
-			!forceSolid &&
-			!shape.props.isPen &&
-			shape.props.dash === 'draw' &&
-			allPointsFromSegments.length === 1
-		) {
-			sw += rng(shape.id)() * (strokeWidth / 6)
+		const points = getPointsFromSegments(shape.props.segments)
+		const [firstPoint, ...restPoints] = points
+		let lineString = `M ${firstPoint.x} ${firstPoint.y} `
+		for (const point of restPoints) {
+			lineString += `L ${point.x} ${point.y} `
 		}
 
-		const options = getFreehandOptions(shape.props, sw, showAsComplete, forceSolid)
-		const strokePoints = getStrokePoints(allPointsFromSegments, options)
-
-		const solidStrokePath =
-			strokePoints.length > 1
-				? getSvgPathFromStrokePoints(strokePoints, shape.props.isClosed)
-				: getDot(allPointsFromSegments[0], sw)
-
-		if ((!forceSolid && shape.props.dash === 'draw') || strokePoints.length < 2) {
-			setStrokePointRadii(strokePoints, options)
-			const strokeOutlinePoints = getStrokeOutlinePoints(strokePoints, options)
-
-			return (
-				<SVGContainer id={shape.id}>
-					<ShapeFill
-						theme={theme}
-						fill={shape.props.isClosed ? shape.props.fill : 'none'}
-						color={shape.props.color}
-						d={solidStrokePath}
-					/>
-					<path
-						d={getSvgPathFromPoints(strokeOutlinePoints, true)}
-						strokeLinecap="round"
-						fill={theme[shape.props.color].solid}
-					/>
-				</SVGContainer>
-			)
-		}
+		const augmentedPoints = augmentPoints(points)
 
 		return (
 			<SVGContainer id={shape.id}>
-				<ShapeFill
-					theme={theme}
-					color={shape.props.color}
-					fill={shape.props.isClosed ? shape.props.fill : 'none'}
-					d={solidStrokePath}
-				/>
-				<path
-					d={solidStrokePath}
-					strokeLinecap="round"
-					fill="none"
-					stroke={theme[shape.props.color].solid}
-					strokeWidth={strokeWidth}
-					strokeDasharray={getDrawShapeStrokeDashArray(shape, strokeWidth)}
-					strokeDashoffset="0"
-				/>
+				<path d={lineString} strokeLinecap="round" fill="none" stroke={'black'} strokeWidth={'1'} />
+				{augmentedPoints.map((point) => {
+					return <circle cx={point.x} cy={point.y} r={3 + point.weight * 7} fill={'red'} />
+				})}
 			</SVGContainer>
 		)
 	}
