@@ -2,6 +2,7 @@
 import {
 	Box2d,
 	Circle2d,
+	Edge2d,
 	Polygon2d,
 	Polyline2d,
 	SVGContainer,
@@ -13,12 +14,14 @@ import {
 	TLShapeUtilCanvasSvgDef,
 	Vec2d,
 	VecLike,
+	canonicalizeRotation,
 	drawShapeMigrations,
 	drawShapeProps,
 	getDefaultColorTheme,
 	getSvgPathFromPoints,
 	last,
 	rng,
+	shortAngleDist,
 	toFixed,
 } from '@tldraw/editor'
 import { getShapeFillSvg } from '../shared/ShapeFill'
@@ -35,6 +38,8 @@ type AugmentedPoint = {
 	x: number
 	y: number
 	weight: number
+	cornerAngle: number
+	cornerSeverity: number
 }
 const distanceWindow = 3
 const maxWeight = 0.5
@@ -46,6 +51,8 @@ function augmentPoints(points: VecLike[]): AugmentedPoint[] {
 				x: points[0].x,
 				y: points[0].y,
 				weight: maxWeight,
+				cornerAngle: 0,
+				cornerSeverity: 0,
 			},
 		]
 	}
@@ -58,19 +65,68 @@ function augmentPoints(points: VecLike[]): AugmentedPoint[] {
 	for (let i = 0; i < points.length; i++) {
 		let totalDistanceInWindow = 0
 		let totalPointsInWindow = 0
+		let avgWindowAngle = 0
 		const windowStart = Math.max(0, i - distanceWindow)
 		const windowEnd = Math.min(points.length - 1, windowStart + distanceWindow * 2 + 1)
-		for (let j = windowStart; j < windowEnd; j++) {
+		for (let j = windowStart; j <= windowEnd; j++) {
 			totalDistanceInWindow += distances[j]
 			totalPointsInWindow++
+			if (j > windowStart) {
+				avgWindowAngle += Vec2d.Angle(points[j - 1], points[j]) + Math.PI * 2
+			}
 		}
+		avgWindowAngle /= totalPointsInWindow - 1
+		avgWindowAngle = canonicalizeRotation(avgWindowAngle)
 		const avgDistanceInWindow = totalDistanceInWindow / totalPointsInWindow
+		let cornerAngle = 0
+		let cornerSeverity = 0
+		if (i === 0) {
+			cornerAngle = Vec2d.Angle(points[0], points[1])
+		} else if (i === points.length - 1) {
+			cornerAngle = Vec2d.Angle(points[i - 1], points[i])
+		} else {
+			const windowLine = new Edge2d({
+				start: Vec2d.From(points[windowStart]),
+				end: Vec2d.From(points[windowEnd]),
+			})
+			const firstNeighborAngle = Vec2d.Angle(points[windowStart], points[i])
+			if (shortAngleDist(avgWindowAngle, firstNeighborAngle) < 0) {
+				cornerAngle = avgWindowAngle - Math.PI / 2
+			} else {
+				cornerAngle = avgWindowAngle + Math.PI / 2
+			}
+			cornerSeverity = Math.min(
+				1,
+				(10 * windowLine.distanceToPoint(Vec2d.From(points[i]))) / windowLine.length
+			)
+		}
+
 		result[i] = {
 			x: points[i].x,
 			y: points[i].y,
 			weight: Math.min(1 / avgDistanceInWindow, 0.5),
+			cornerAngle,
+			cornerSeverity,
 		}
 	}
+	// soften corner severities
+
+	// const severities = []
+	// for (let i = 0; i < points.length; i++) {
+	// 	const windowStart = Math.max(0, i - distanceWindow)
+	// 	const windowEnd = Math.min(points.length - 1, windowStart + distanceWindow * 2 + 1)
+	// 	let totalSeverity = 0
+	// 	let totalNum = 0
+	// 	for (let j = windowStart; j < windowEnd; j++) {
+	// 		totalSeverity += result[j].cornerSeverity
+	// 		totalNum++
+	// 	}
+	// 	severities[i] = totalSeverity / totalNum
+	// }
+
+	// for (let i = 0; i < points.length; i++) {
+	// 	result[i].cornerSeverity = severities[i]
+	// }
 
 	return result
 }
@@ -149,6 +205,18 @@ export class DrawShapeUtil extends ShapeUtil<TLDrawShape> {
 				<path d={lineString} strokeLinecap="round" fill="none" stroke={'black'} strokeWidth={'1'} />
 				{augmentedPoints.map((point) => {
 					return <circle cx={point.x} cy={point.y} r={3 + point.weight * 7} fill={'red'} />
+				})}
+				{augmentedPoints.map((point) => {
+					return (
+						<line
+							x1={point.x}
+							y1={point.y}
+							x2={point.x + Math.cos(point.cornerAngle) * point.cornerSeverity * 10}
+							y2={point.y + Math.sin(point.cornerAngle) * point.cornerSeverity * 10}
+							stroke={'blue'}
+							strokeWidth={0.6}
+						/>
+					)
 				})}
 			</SVGContainer>
 		)
